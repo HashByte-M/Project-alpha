@@ -1,0 +1,10 @@
+streamlit
+pandas
+numpy
+plotly
+pydeck
+altair
+streamlit-lottie
+google-generativeai
+scikit-learn
+statsmodels
