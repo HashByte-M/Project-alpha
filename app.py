@@ -54,17 +54,43 @@ st.markdown("""
         border: 1px solid #3c404f;
         box-shadow: 0 4px 8px 0 rgba(0,0,0,0.2);
     }
-    .gradient-text {
-        font-size: 2.5rem;
-        font-weight: bold;
+
+    .header-container {
+        text-align: center;
+        padding: 2rem 1rem 1rem 1rem;
+    }
+
+    .logo-and-title {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 15px;
+        margin-bottom: 0.5rem;
+    }
+
+    .logo-svg {
+        width: 50px;
+        height: 50px;
+    }
+
+    .header-container h1 {
+        font-size: 3.5rem;
+        font-weight: 700;
         background: -webkit-linear-gradient(45deg, #00c6ff, #0072ff);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
+        margin: 0;
+        line-height: 1;
     }
-    .dashboard-title {
-        text-align: center;
-        padding: 1rem;
+
+    .header-container h2 {
+        font-size: 1.25rem;
+        font-weight: 300;
+        color: #e0e0e0;
+        margin-top: 0.25rem;
+        letter-spacing: 1px;
     }
+
     .fade-in {
         animation: fadeIn 1s;
     }
@@ -214,7 +240,7 @@ def get_gemini_response(prompt: str) -> str | None:
         st.error("Automated analysis features are disabled or API key is not provided.")
         return None
     try:
-        model = genai.GenerativeModel('gemini-2.0-flash-lite')
+        model = genai.GenerativeModel('models/gemini-2.0-flash')
         with st.spinner("Processing analysis request..."):
             response = model.generate_content(prompt, request_options={"timeout": 180})
         return response.text
@@ -511,7 +537,17 @@ else: df_filtered = df_base_filtered
 if df_filtered.empty: st.warning("No time-series data in selected time range."); st.stop()
 
 # --- 7. MAIN APPLICATION UI & TABS ---
-st.markdown('<div class="dashboard-title"><p class="gradient-text">National Water Resources Intelligence Dashboard</p></div>', unsafe_allow_html=True)
+st.markdown("""<div class="header-container">
+    <div class="logo-and-title">
+        <svg class="logo-svg" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+            <path fill="#0072ff" d="M50,10 C77.61,10 100,32.39 100,60 C100,87.61 77.61,100 50,100 C22.39,100 0,87.61 0,60 C0,32.39 22.39,10 50,10 Z" transform="translate(0, -10)"></path>
+            <path fill="#00c6ff" d="M50,10 C77.61,10 100,32.39 100,60 C100,75 77.61,85 50,85 C22.39,85 0,75 0,60 C0,32.39 22.39,10 50,10 Z" transform="translate(0, -5)"></path>
+            <path fill="white" d="M50,20 C70,20 85,35 85,50 C85,65 70,80 50,80 C30,80 15,65 15,50 C15,35 30,20 50,20 Z" opacity="0.2"></path>
+        </svg>
+        <h1>Aquasphere</h1>
+    </div>
+    <h2>National Water Intelligence Dashboard</h2>
+</div>""", unsafe_allow_html=True)
 tabs = ["🗺️ Unified Map", "📊 At-a-Glance", "🚨 Critical Alerts", "⚖️ Policy & Governance", "🏛️ Strategic Planning", "🔬 Research Hub", "💧 Public Info", "🌊 Advanced Hydrology", "📋 Full Report"]
 if 'active_tab' not in st.session_state: st.session_state.active_tab = tabs[0]
 def set_active_tab(): st.session_state.active_tab = st.session_state.navigation_radio
