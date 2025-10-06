@@ -1,8 +1,8 @@
 # advanced_water_dashboard.py
 #
-# National Water Resources Intelligence Dashboard (Version 12.3 - Robust State Management)
-# This version fully adopts st.session_state for API key management, mirroring best
-# practices and fixing all AI-related state errors.
+# National Water Resources Intelligence Dashboard (Version 13.0 - Enhanced Decision Support)
+# This version introduces critical alerts, scenario modeling, and an intervention advisor,
+# while refining filters and integrating analysis more seamlessly.
 
 # --- IMPORTANT SETUP INSTRUCTION ---
 # For the custom theme to work, you MUST create a folder named '.streamlit' in the
@@ -45,7 +45,34 @@ warnings.filterwarnings("ignore")
 
 # Custom CSS Injection for modern UI/UX
 st.markdown("""
-
+<style>
+    .card {
+        background-color: rgba(42, 44, 54, 0.6);
+        border-radius: 10px;
+        padding: 20px;
+        margin-bottom: 15px;
+        border: 1px solid #3c404f;
+        box-shadow: 0 4px 8px 0 rgba(0,0,0,0.2);
+    }
+    .gradient-text {
+        font-size: 2.5rem;
+        font-weight: bold;
+        background: -webkit-linear-gradient(45deg, #00c6ff, #0072ff);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+    }
+    .dashboard-title {
+        text-align: center;
+        padding: 1rem;
+    }
+    .fade-in {
+        animation: fadeIn 1s;
+    }
+    @keyframes fadeIn {
+        from { opacity: 0; }
+        to { opacity: 1; }
+    }
+</style>
 """, unsafe_allow_html=True)
 
 
@@ -182,27 +209,27 @@ def animated_metric(column, label, value, unit="", help_text="", delta=None, del
         time.sleep(sleep_duration)
 
 def get_gemini_response(prompt: str) -> str | None:
-    """Centralized function to communicate with the Gemini API. Assumes API is already configured."""
-    if st.session_state.get('ai_disabled', False) or not st.session_state.get("gemini_key"):
-        st.error("AI features are disabled or API key is not provided.")
+    """Centralized function to communicate with the generative model API."""
+    if st.session_state.get('analysis_disabled', False) or not st.session_state.get("gemini_key"):
+        st.error("Automated analysis features are disabled or API key is not provided.")
         return None
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
-        with st.spinner("🤖 Communicating with Google Gemini AI..."):
+        model = genai.GenerativeModel('gemini-2.0-flash-lite')
+        with st.spinner("Processing analysis request..."):
             response = model.generate_content(prompt, request_options={"timeout": 180})
         return response.text
     except Exception as e:
-        st.error(f"Error with Gemini API: {e}")
+        st.error(f"Error with analysis service: {e}")
         return None
 
 @st.cache_data
-def perform_ai_column_mapping(raw_columns: list, target_schema: list, file_name: str) -> dict | None:
-    """Uses AI to map raw CSV columns to the application's standard schema."""
+def perform_column_mapping(raw_columns: list, target_schema: list, file_name: str) -> dict | None:
+    """Uses generative model to map raw CSV columns to the application's standard schema."""
     prompt = f"""Act as an expert data ingestion pipeline assistant. Your sole task is to map column headers from a user's uploaded CSV file (`{file_name}`) to a predefined standard schema: `{target_schema}`. The raw headers are: `{raw_columns}`. Analyze the user's headers flexibly (case, symbols, abbreviations). Return ONLY a single raw JSON object mapping EACH standard header to a raw header, or to `null` if no match is found. Do not include any text or markdown formatting outside the JSON object."""
     response_text = get_gemini_response(prompt)
     if not response_text: return None
     try: return json.loads(response_text.strip().replace("```json", "").replace("```", ""))
-    except json.JSONDecodeError: st.error(f"AI returned invalid mapping for {file_name}."); return None
+    except json.JSONDecodeError: st.error(f"Automated mapping returned invalid format for {file_name}."); return None
 
 def render_manual_column_mapper(file_name: str, raw_columns: list, target_schema: list) -> dict:
     """Creates a UI for manually mapping columns."""
@@ -340,22 +367,46 @@ def get_regional_status(ts, gw, col, quant):
     latest['status'] = np.where(latest['groundwaterlevel_mbgl'] > latest['threshold'], 'Low/Critical', 'Normal')
     return latest.groupby([col, 'status']).size().reset_index(name='count')
 
+@st.cache_data
+def identify_critical_alerts(_ts_data, _gw_stations, percentile=90):
+    """Identifies stations that have recently crossed a critical high-water-mark threshold."""
+    if _ts_data.empty or _gw_stations.empty:
+        return pd.DataFrame()
+    
+    # Get the latest reading for each station
+    latest_readings = _ts_data.loc[_ts_data.groupby('station_name')['timestamp'].idxmax()]
+    
+    # Calculate the historical threshold for each station
+    thresholds = _ts_data.groupby('station_name')['groundwaterlevel_mbgl'].quantile(percentile / 100.0)
+    
+    # Merge latest readings with thresholds
+    alerts_df = pd.merge(latest_readings, thresholds.rename('critical_threshold_mbgl'), on='station_name')
+    
+    # Filter for stations where the latest level is above the threshold
+    alerts_df = alerts_df[alerts_df['groundwaterlevel_mbgl'] > alerts_df['critical_threshold_mbgl']]
+    
+    # Add station metadata
+    alerts_df = pd.merge(alerts_df, _gw_stations[['station_name', 'state_name', 'district_name']], on='station_name', how='left')
+    
+    return alerts_df[['timestamp', 'station_name', 'state_name', 'district_name', 'groundwaterlevel_mbgl', 'critical_threshold_mbgl']]
+
+
 # --- 3. SIDEBAR / CONTROL PANEL UI ---
 
 st.sidebar.title("⚙️ Control Panel")
 st.sidebar.header("1. System Configuration")
-st.sidebar.toggle("Disable All AI Features", key="ai_disabled", help="Run in manual mode without Gemini AI.")
+st.sidebar.toggle("Disable Automated Analysis", key="analysis_disabled", help="Run in manual mode without generative analysis.")
 
 # Use text_input to get the key and store it in session_state
-if not st.session_state.ai_disabled:
-    st.sidebar.text_input("Enter Gemini API Key:", type="password", key="gemini_key")
+if not st.session_state.analysis_disabled:
+    st.sidebar.text_input("Enter API Key for Analysis:", type="password", key="gemini_key")
 
 # Configure the API once at the start if the key exists in the session state
 try:
     if st.session_state.get("gemini_key"):
         genai.configure(api_key=st.session_state.gemini_key)
 except Exception as e:
-    st.error(f"Error configuring Gemini API: {e}")
+    st.error(f"Error configuring analysis API: {e}")
 
 st.sidebar.header("2. Data Ingestion")
 uploaded_files = st.sidebar.file_uploader("Upload 3 CSVs (GW Stations, RF Stations, Time-Series)", type=['csv'], accept_multiple_files=True)
@@ -387,18 +438,18 @@ with st.sidebar.expander("Column Mapping", expanded=False):
     schemas = {'station': ['station_name', 'latitude', 'longitude', 'state_name', 'district_name', 'agency_name', 'basin'], 'timeseries': ['station_name', 'timestamp', 'groundwaterlevel_mbgl', 'rainfall_mm', 'temperature_c', 'ph', 'turbidity_ntu', 'tds_ppm']}
     raw_cols = {name: pd.read_csv(io.BytesIO(file_contents[name]), nrows=0).columns.tolist() for name in file_contents}
     
-    if not st.session_state.ai_disabled:
-        st.subheader("🤖 AI-Assisted Mapping")
+    if not st.session_state.analysis_disabled:
+        st.subheader("Automated Column Mapping")
         if st.session_state.get("gemini_key"):
-            gw_mapping = perform_ai_column_mapping(raw_cols[gw_station_fname], schemas['station'], gw_station_fname)
-            rf_mapping = perform_ai_column_mapping(raw_cols[rf_station_fname], schemas['station'], rf_station_fname)
-            ts_mapping = perform_ai_column_mapping(raw_cols[ts_fname], schemas['timeseries'], ts_fname)
+            gw_mapping = perform_column_mapping(raw_cols[gw_station_fname], schemas['station'], gw_station_fname)
+            rf_mapping = perform_column_mapping(raw_cols[rf_station_fname], schemas['station'], rf_station_fname)
+            ts_mapping = perform_column_mapping(raw_cols[ts_fname], schemas['timeseries'], ts_fname)
 
             if gw_mapping: st.json({"GW Stations": gw_mapping}, expanded=False)
             if rf_mapping: st.json({"RF Stations": rf_mapping}, expanded=False)
             if ts_mapping: st.json({"Time-Series": ts_mapping}, expanded=False)
         else:
-            st.warning("Please enter your Gemini API key to use AI-assisted mapping.")
+            st.warning("Please enter your API key to use automated mapping.")
     else:
         st.subheader("Manual Mapping")
         gw_mapping, rf_mapping, ts_mapping = render_manual_column_mapper(gw_station_fname, raw_cols[gw_station_fname], schemas['station']), render_manual_column_mapper(rf_station_fname, raw_cols[rf_station_fname], schemas['station']), render_manual_column_mapper(ts_fname, raw_cols[ts_fname], schemas['timeseries'])
@@ -406,8 +457,8 @@ with st.sidebar.expander("Column Mapping", expanded=False):
 # Final check for mapping completion
 mapping_is_done = all([gw_mapping, rf_mapping, ts_mapping])
 if not mapping_is_done:
-    if not st.session_state.ai_disabled and not st.session_state.get("gemini_key"):
-        st.info("👋 Please provide your Gemini API key in the sidebar to proceed with AI mapping, or disable AI for manual mapping.")
+    if not st.session_state.analysis_disabled and not st.session_state.get("gemini_key"):
+        st.info("👋 Please provide your API key in the sidebar for automated mapping, or disable it for manual mapping.")
         st.stop()
     else:
         st.error("Column mapping is incomplete. Please complete the mapping in the sidebar.")
@@ -428,7 +479,10 @@ with st.sidebar.expander("Data Quality Audit", expanded=True):
 def reset_downstream_cache(): st.session_state.pop('forecast_results', None); st.session_state.pop('report_data', None)
 st.sidebar.header("3. Analysis Filters")
 ALL = "All"
-all_stations_ui = pd.concat([gw_stations_filtered[['state_name', 'district_name', 'station_name', 'basin']], rf_stations_filtered[['state_name', 'district_name', 'station_name', 'basin']]]).drop_duplicates().sort_values('state_name')
+
+# REFINED FILTER: Only show states, districts, etc., that have GW time-series data.
+all_stations_ui = gw_stations_filtered[['state_name', 'district_name', 'station_name', 'basin']].drop_duplicates().sort_values('state_name')
+
 state = st.sidebar.selectbox("State:", [ALL] + sorted(all_stations_ui['state_name'].unique()), on_change=reset_downstream_cache, key='state_filter')
 if state != ALL: all_stations_ui = all_stations_ui[all_stations_ui['state_name'] == state]
 district = st.sidebar.selectbox("District:", [ALL] + sorted(all_stations_ui['district_name'].unique()), on_change=reset_downstream_cache, key='district_filter')
@@ -458,7 +512,7 @@ if df_filtered.empty: st.warning("No time-series data in selected time range.");
 
 # --- 7. MAIN APPLICATION UI & TABS ---
 st.markdown('<div class="dashboard-title"><p class="gradient-text">National Water Resources Intelligence Dashboard</p></div>', unsafe_allow_html=True)
-tabs = ["🗺️ Unified Map", "📊 At-a-Glance", "⚖️ Policy", "🏛️ Strategic Planning", "🔬 Research Hub", "💧 Public Info", "🌊 Advanced Hydrology", "📋 Full Report"]
+tabs = ["🗺️ Unified Map", "📊 At-a-Glance", "🚨 Critical Alerts", "⚖️ Policy & Governance", "🏛️ Strategic Planning", "🔬 Research Hub", "💧 Public Info", "🌊 Advanced Hydrology", "📋 Full Report"]
 if 'active_tab' not in st.session_state: st.session_state.active_tab = tabs[0]
 def set_active_tab(): st.session_state.active_tab = st.session_state.navigation_radio
 try: default_tab_index = tabs.index(st.session_state.active_tab)
@@ -548,17 +602,50 @@ with main_container:
             fig_pie.update_traces(pull=pull, textinfo='percent+label').update_layout(transition_duration=500, template="streamlit")
             st.plotly_chart(fig_pie, use_container_width=True)
 
-
-    # --- TAB 3: Policy & Governance ---
+    # --- NEW TAB 3: Critical Alerts ---
     elif selected_tab == tabs[2]:
+        st.header("🚨 Critical Alerts")
+        st.write("This real-time monitoring system identifies stations where water levels have recently crossed a critical threshold, indicating potential stress.")
+        
+        with card("Alert Configuration"):
+            alert_percentile = st.slider("Define Critical Threshold (Historical Percentile):", min_value=75, max_value=99, value=90,
+                                         help="A station is 'critical' if its latest water level is deeper than this percentile of its entire history. Higher values mean more extreme events.")
+
+        with card("Active Critical Alerts"):
+            with st.spinner("Scanning for critical stations..."):
+                alerts = identify_critical_alerts(ts_data, gw_stations_filtered, percentile=alert_percentile)
+            
+            if alerts.empty:
+                st.success("✅ No stations are currently in a critical state based on the selected threshold.")
+            else:
+                st.error(f"**{len(alerts)} station(s) are reporting critical water levels.**")
+                st.dataframe(alerts.style.format({
+                    'timestamp': '{:%Y-%m-%d}',
+                    'groundwaterlevel_mbgl': '{:.2f} m',
+                    'critical_threshold_mbgl': '{:.2f} m'
+                }).highlight_max(axis=0, subset=['groundwaterlevel_mbgl'], color='#D2042D'))
+
+                st.subheader("Alerts Summary")
+                cols = st.columns(3)
+                cols[0].metric("Total Alerts", len(alerts))
+                most_affected_state = alerts['state_name'].mode()[0] if not alerts['state_name'].mode().empty else "N/A"
+                cols[1].metric("Most Affected State", most_affected_state)
+                most_recent_alert_date = alerts['timestamp'].max().strftime('%Y-%m-%d')
+                cols[2].metric("Most Recent Alert", most_recent_alert_date)
+
+
+    # --- TAB 4: Policy & Governance ---
+    elif selected_tab == tabs[3]:
         st.header("⚖️ Policy & Governance Insights")
         st.write("Analyze regional water stress and long-term trends to inform policy decisions.")
         
         with card("Regional Groundwater Stress Hotspots"):
-            level = st.radio("Analyze by:", ("State", "River Basin"), horizontal=True)
+            level = st.radio("Analyze by:", ("State", "River Basin"), horizontal=True, key="policy_level")
             group_col = 'state_name' if level == "State" else 'basin'
-            percentile = st.slider("Define 'Critical' Level (%):", 50, 95, 75, 5)
+            percentile = st.slider("Define 'Critical' Level (%):", 50, 95, 75, 5, key="policy_percentile")
             status = get_regional_status(ts_data, gw_stations_filtered, group_col, percentile / 100.0)
+            stressed_regions = status[status['status'] == 'Low/Critical'][group_col].tolist()
+
             if not status.empty:
                 chart = alt.Chart(status).mark_bar().encode(
                     x=alt.X(f'{group_col}:N', sort='-y', title=level, axis=alt.Axis(labelAngle=-45)),
@@ -567,12 +654,31 @@ with main_container:
                     tooltip=[group_col, 'status', 'count']
                 ).properties(
                     title=f'Groundwater Status by {level}'
-                ).configure_title(fontSize=36).interactive()
+                ).configure_title(fontSize=20).interactive()
                 st.altair_chart(chart, use_container_width=True)
-                if st.button("Generate AI Policy Briefing", disabled=not st.session_state.get("gemini_key")):
-                    analysis = get_gemini_response(f"""As a senior water policy advisor, analyze this data on GW stress by {level}: {status.to_json(orient='records')}. Provide a briefing with: executive summary, key hotspots, 3 actionable policy recommendations, and data gaps.""")
+                if st.button("Generate Policy Briefing", disabled=not st.session_state.get("gemini_key")):
+                    prompt = f"""As a senior water policy advisor to the Government of India, analyze this data on groundwater stress by {level}: {status.to_json(orient='records')}. Provide a concise, moderate-length briefing. Structure it with:
+1.  **Executive Summary:** A single paragraph on the key takeaway.
+2.  **Key Hotspots:** Bullet points identifying the most stressed regions.
+3.  **Actionable Policy Recommendations:** 3 distinct, brief recommendations.
+4.  **Identified Data Gaps:** A sentence on potential data limitations."""
+                    analysis = get_gemini_response(prompt)
                     if analysis:
                         st.markdown(analysis)
+
+        with card("Intervention Strategy Advisor"):
+            st.write("Select a stressed region identified above to generate tailored management strategies.")
+            if not stressed_regions:
+                st.info("No regions identified as 'Low/Critical' with the current settings.")
+            else:
+                selected_region = st.selectbox("Select a Stressed Region:", stressed_regions)
+                if st.button(f"Suggest Management Strategies for {selected_region}", disabled=not st.session_state.get("gemini_key")):
+                    prompt = f"""You are a senior hydrogeologist advising the Central Ground Water Board of India. For the groundwater-stressed region of **{selected_region}**, provide 3-4 specific, actionable, and cost-effective intervention strategies.
+Focus on both supply-side (e.g., recharge) and demand-side (e.g., efficiency) management.
+Present these as a bulleted list with a brief justification (1-2 sentences) for each. The response should be concise."""
+                    strategies = get_gemini_response(prompt)
+                    if strategies:
+                        st.markdown(strategies)
 
         with card("Long-Term Station Health Trends"):
             with st.spinner("Analyzing long-term trends..."):
@@ -586,22 +692,13 @@ with main_container:
             else:
                 st.info("No stations with sufficient historical data (>30 points) for long-term trend analysis were found in the current dataset.")
 
-        with card("AI Policy Simulator & Advisor"):
-            if not st.session_state.ai_disabled:
-                policy_goal = st.selectbox("Select Policy Goal:", ["Increase Groundwater Recharge", "Reduce Water Depletion", "Improve Drought Resilience"])
-                if st.button(f"Generate Policy Brief for '{policy_goal}'", disabled=not st.session_state.get("gemini_key")):
-                    analysis = get_gemini_response(f"""As a water policy expert for India, create a detailed policy brief on **"{policy_goal}"**. Structure it with: Introduction, Key Challenges, 3-5 Strategic Interventions, Implementation Roadmap, and Conclusion.""")
-                    if analysis:
-                        st.markdown(analysis)
-            else:
-                st.info("Enable AI to use the Policy Simulator.")
 
-    # --- TAB 4: Strategic Planning ---
-    elif selected_tab == tabs[3]:
+    # --- TAB 5: Strategic Planning ---
+    elif selected_tab == tabs[4]:
         st.header("🏛️ Strategic Planning & Scenario Modeling")
         st.write("Conduct long-term supply vs. demand analysis for a specific station's area of influence.")
         if not single_station_mode:
-            st.info("Select a single station for planning tools.")
+            st.info("Select a single station from the sidebar for planning tools.")
             st.stop()
         station_ts_data = df_base_filtered[df_base_filtered['station_name'] == station_name]
         
@@ -610,8 +707,8 @@ with main_container:
                 line = alt.Chart(station_ts_data).mark_line(point=True).encode(x='timestamp:T', y=alt.Y('groundwaterlevel_mbgl:Q', title="GW Level (mbgl)"), tooltip=['timestamp', 'groundwaterlevel_mbgl']).properties(title='Historical Groundwater Level').interactive()
                 st.altair_chart(line, use_container_width=True)
 
-        with card("Sustainable Yield & Demand Modeling"):
-            st.subheader("2. Sustainable Yield Estimation")
+        with card("Sustainable Yield & Water Balance"):
+            st.subheader("1. Sustainable Yield Estimation")
             sy_planning = st.number_input("Specific Yield (Sy):", 0.01, 0.50, 0.15, 0.01)
             planning_df = station_ts_data.set_index('timestamp').asfreq('D').interpolate(method='time')
             planning_df['gw_level_change'] = planning_df['groundwaterlevel_mbgl'].diff()
@@ -621,31 +718,56 @@ with main_container:
             c1, c2 = st.columns(2)
             c1.metric("Avg Est. Annual Recharge", f"{avg_annual_recharge:.2f} mm/year")
             c2.metric("Est. Sustainable Yield", f"{sustainable_yield_mm:.2f} mm/year")
-            st.subheader(f"3. Water Balance Scenario Modeling")
+            
+            st.subheader(f"2. Baseline Demand Modeling")
             area = st.number_input("Area of Influence (sq. km):", 0.1, 1000.0, 10.0, 1.0)
             sustainable_volume_m3 = (sustainable_yield_mm / 1000) * (area * 1_000_000)
-            st.subheader("4. Demand Modeling")
             c5, c6, c7 = st.columns(3)
             agri_demand_m3 = c5.number_input("Agri. Demand (m³):", value=50000)
             ind_demand_m3 = c6.number_input("Ind. Demand (m³):", value=20000)
             dom_demand_m3 = c7.number_input("Dom. Demand (m³):", value=30000)
             total_demand = agri_demand_m3 + ind_demand_m3 + dom_demand_m3
             balance = sustainable_volume_m3 - total_demand
-            st.subheader("5. Water Balance Results")
+            
+            st.subheader("3. Baseline Water Balance Results")
             fig_balance = go.Figure(data=[go.Bar(name='Sustainable Supply', x=['Water Balance'], y=[sustainable_volume_m3]), go.Bar(name='Projected Demand', x=['Water Balance'], y=[total_demand])])
             fig_balance.update_layout(barmode='group', title='Annual Supply vs. Demand', template='plotly_dark', transition_duration=500)
             st.plotly_chart(fig_balance, use_container_width=True)
-            if balance > 0:
-                st.success(f"**Projected Surplus: {balance:,.0f} m³/year**")
-            else:
-                st.error(f"**Projected Deficit: {abs(balance):,.0f} m³/year**")
-            if st.button("Generate AI Strategic Recommendations", disabled=not st.session_state.get("gemini_key")):
-                analysis = get_gemini_response(f"""As a water consultant, analyze this scenario for {station_name}: Supply={sustainable_volume_m3:,.0f} m³, Demand={total_demand:,.0f} m³, Balance={balance:,.0f} m³/year. Provide recommendations for a deficit or surplus.""")
+            if balance > 0: st.success(f"**Projected Surplus: {balance:,.0f} m³/year**")
+            else: st.error(f"**Projected Deficit: {abs(balance):,.0f} m³/year**")
+
+        with card("What-If Scenario Modeler"):
+            st.write("Model the impact of future changes in rainfall and demand on the water balance.")
+            c1, c2 = st.columns(2)
+            rain_change = c1.slider("% Change in Future Rainfall", -50, 50, 0, help="Simulates drought or high rainfall years by adjusting supply.")
+            demand_change = c2.slider("% Change in Future Demand", -50, 50, 0, help="Simulates changes in population, industry, or agricultural practices.")
+
+            # Calculations
+            modified_supply = sustainable_volume_m3 * (1 + rain_change / 100)
+            modified_demand = total_demand * (1 + demand_change / 100)
+            new_balance = modified_supply - modified_demand
+            
+            st.subheader("Scenario Results")
+            c3, c4 = st.columns(2)
+            delta_balance = new_balance - balance
+            c3.metric("New Water Balance (m³/year)", f"{new_balance:,.0f}", f"{delta_balance:,.0f}")
+            
+            if new_balance > 0: c4.success("**Scenario Result: Surplus**")
+            else: c4.error("**Scenario Result: Deficit**")
+            
+            if st.button("Generate Scenario Analysis", disabled=not st.session_state.get("gemini_key")):
+                prompt = f"""As a water resource management consultant, analyze this 'what-if' scenario for station {station_name}.
+- Baseline Balance: {balance:,.0f} m³/year
+- Scenario: {rain_change}% change in rainfall, {demand_change}% change in demand.
+- Scenario Result: A new water balance of {new_balance:,.0f} m³/year.
+Provide a brief, 2-3 sentence summary of the key implication of this scenario and one strategic recommendation to manage the outcome."""
+                analysis = get_gemini_response(prompt)
                 if analysis:
                     st.markdown(analysis)
 
-    # --- TAB 5: Research Hub ---
-    elif selected_tab == tabs[4]:
+
+    # --- TAB 6: Research Hub ---
+    elif selected_tab == tabs[5]:
         st.header("🔬 Research Hub & Advanced Analytics")
         st.write("Dive deep into water quality analysis, parameter correlations, and predictive forecasting.")
 
@@ -659,21 +781,25 @@ with main_container:
             fig_quality.update_yaxes(title_text="pH Level", secondary_y=False); fig_quality.update_yaxes(title_text="TDS / Turbidity", secondary_y=True)
             st.plotly_chart(fig_quality, use_container_width=True)
 
-        with card("2. AI Correlation Analyst"):
-            if not st.session_state.ai_disabled:
+        with card("2. Correlation Analyst"):
+            if not st.session_state.analysis_disabled:
                 cols = [col for col in ['groundwaterlevel_mbgl', 'rainfall_mm', 'temperature_c', 'ph', 'turbidity_ntu', 'tds_ppm'] if col in df_filtered.columns]
                 c1, c2 = st.columns(2); p1 = c1.selectbox("Parameter 1:", cols); p2 = c2.selectbox("Parameter 2:", cols, index=1 if len(cols)>1 else 0)
-                if st.button("Analyze Correlation with AI", disabled=not st.session_state.get("gemini_key")):
+                if st.button("Analyze Correlation", disabled=not st.session_state.get("gemini_key")):
                     corr_df = df_filtered[[p1, p2]].dropna()
                     if len(corr_df) > 1:
                         corr = corr_df.corr().iloc[0, 1]
                         st.metric(f"Pearson Correlation between {p1} and {p2}", f"{corr:.3f}")
-                        prompt = f"""As a research hydrologist, analyze the relationship between '{p1}' and '{p2}' (Pearson correlation: {corr:.2f}). Explain the correlation, its hydrological context, and research implications."""
+                        prompt = f"""As a research hydrologist, analyze the relationship between '{p1}' and '{p2}' which show a Pearson correlation of {corr:.3f}.
+Provide a concise interpretation (2-3 sentences) covering:
+1.  The strength and direction of the correlation.
+2.  A plausible hydrological explanation for this relationship.
+3.  One potential implication for further research."""
                         analysis = get_gemini_response(prompt)
                         if analysis:
                             st.markdown(analysis)
                     else: st.warning("Not enough overlapping data for correlation.")
-            else: st.info("Enable AI to use the Correlation Analyst.")
+            else: st.info("Enable automated analysis to use the Correlation Analyst.")
 
         with card("3. High-Accuracy Predictive Forecast"):
             st.warning("Note: This forecast uses a generalized SARIMAX model for rapid analysis. For scientific or operational use, model parameters should be tuned specifically for each time-series dataset.")
@@ -681,7 +807,7 @@ with main_container:
                 st.info("Select a single station for forecasting.")
             else:
                 days = st.slider("Days to forecast:", 7, 180, 30)
-                if st.button("Generate Forecast", disabled=not st.session_state.get("gemini_key")):
+                if st.button("Generate Forecast"):
                     with st.spinner("Running SARIMAX model..."):
                         try:
                             df_f = df_filtered[['timestamp', 'groundwaterlevel_mbgl']].set_index('timestamp').asfreq('D').interpolate(method='time')
@@ -700,8 +826,8 @@ with main_container:
                         except Exception as e: st.error(f"Forecasting failed. Error: {e}")
 
 
-    # --- TAB 6: Public Info ---
-    elif selected_tab == tabs[5]:
+    # --- TAB 7: Public Info ---
+    elif selected_tab == tabs[6]:
         st.header(f"💧 Public Water Information Center")
         st.write("Understand the current water situation in your area with simple, easy-to-read gauges.")
         
@@ -728,18 +854,20 @@ with main_container:
                 else: st.info("No TDS data.")
             st.info("Green zones on gauges indicate desirable ranges, while red indicates levels that may require attention.")
 
-        with card("💡 What This Means For You & AI-Powered Advice"):
-            if not st.session_state.ai_disabled:
-                if st.button("Get a Simple AI Summary of the Water Situation", disabled=not st.session_state.get("gemini_key")):
+        with card("💡 What This Means For You"):
+            if not st.session_state.analysis_disabled:
+                if st.button("Get a Simple Summary of the Water Situation", disabled=not st.session_state.get("gemini_key")):
                     prompt_data = {'GW Level': f"{df_filtered['groundwaterlevel_mbgl'].dropna().iloc[-1]:.2f} mbgl" if 'groundwaterlevel_mbgl' in df_filtered.columns and not df_filtered['groundwaterlevel_mbgl'].dropna().empty else "N/A", 'pH': f"{df_filtered['ph'].dropna().iloc[-1]:.2f}" if 'ph' in df_filtered.columns and not df_filtered['ph'].dropna().empty else "N/A", 'TDS': f"{df_filtered['tds_ppm'].dropna().iloc[-1]:.2f} ppm" if 'tds_ppm' in df_filtered.columns and not df_filtered['tds_ppm'].dropna().empty else "N/A"}
-                    prompt = f"""As a public information assistant, explain the local water situation in simple, non-technical language based on: {prompt_data}. Explain water availability (higher mbgl is worse), quality (pH ideal 6.5-8.5, TDS ideal < 500 ppm), give a one-sentence summary, and a daily tip related to the data."""
+                    prompt = f"""As a public information assistant, explain the local water situation in simple, non-technical language based on: {prompt_data}.
+Explain what the numbers mean for water availability (higher mbgl is worse) and quality (pH ideal 6.5-8.5, TDS ideal < 500 ppm).
+Provide a one-sentence summary and a simple, daily water-saving tip related to the data. Keep the entire response short and easy to read."""
                     analysis = get_gemini_response(prompt)
                     if analysis:
                         st.info(analysis)
-            else: st.info("Enable AI features for a simple summary.")
+            else: st.info("Enable automated analysis features for a simple summary.")
 
-    # --- TAB 7: Advanced Hydrology ---
-    elif selected_tab == tabs[6]:
+    # --- TAB 8: Advanced Hydrology ---
+    elif selected_tab == tabs[7]:
         st.header("🌊 Advanced Hydrology Analysis")
         st.write("Explore detailed hydrological characteristics like volatility, seasonal performance, and historical drought events.")
         if not single_station_mode: st.info("Select a single station for advanced hydrology tools."); st.stop()
@@ -753,31 +881,34 @@ with main_container:
             fig_vol.add_trace(go.Scatter(x=df_hydro.index, y=df_hydro['volatility'], name='90-Day Volatility', line=dict(color='lightgreen')), secondary_y=True)
             fig_vol.update_layout(title="Water Level vs. 90-Day Volatility", template='plotly_dark', transition_duration=500); fig_vol.update_yaxes(title_text="GW Level (mbgl)", secondary_y=False); fig_vol.update_yaxes(title_text="Volatility (Std. Dev.)", secondary_y=True)
             st.plotly_chart(fig_vol, use_container_width=True)
+            if st.button("Interpret Volatility Trend", disabled=not st.session_state.get("gemini_key")):
+                prompt = f"""You are a hydrogeologist. Given a rolling 90-day volatility for a groundwater station, briefly interpret what an increasing, decreasing, or stable trend in this volatility implies. Explain what it might suggest about aquifer stability, recharge patterns, or abstraction pressures. Keep the response to a concise paragraph."""
+                analysis = get_gemini_response(prompt)
+                if analysis: st.markdown(analysis)
 
-        with card("2. Smoothed Trend Analysis (EWMA)"):
-            ewma_span = st.slider("Select EWMA Span (days):", 7, 180, 30, key='ewma_span')
-            df_hydro['ewma'] = df_hydro['groundwaterlevel_mbgl'].ewm(span=ewma_span, adjust=False).mean()
-            fig_ewma = px.line(df_hydro, y=['groundwaterlevel_mbgl', 'ewma'], title="Exponentially Weighted Moving Average Trend", template='plotly_dark')
-            fig_ewma.update_layout(transition_duration=500)
-            st.plotly_chart(fig_ewma, use_container_width=True)
 
-        with card("3. Seasonal Aquifer Performance (Pre- vs. Post-Monsoon)"):
+        with card("2. Seasonal Aquifer Performance (Pre- vs. Post-Monsoon)"):
             monsoon = analyze_monsoon_performance(df_base_filtered)
             if not monsoon.empty:
                 st.metric("Average Monsoon Recharge Effect", f"{monsoon['recharge_effect_m'].mean():.2f} m")
                 fig_monsoon = px.bar(monsoon, x='year', y=['pre_monsoon_level_mbgl', 'post_monsoon_level_mbgl'], barmode='group', title='Pre vs. Post Monsoon Water Levels', template='plotly_dark')
-                fig_monsoon.update_layout(transition_duration=500); st.plotly_chart(fig_monsoon, use_container_width=True); st.dataframe(monsoon)
+                fig_monsoon.update_layout(transition_duration=500); st.plotly_chart(fig_monsoon, use_container_width=True)
+                if st.button("Analyze Seasonal Performance", disabled=not st.session_state.get("gemini_key")):
+                     prompt = f"""As a water resource analyst, you are looking at pre- and post-monsoon data for a groundwater station. The average recharge effect (difference between pre and post levels) is {monsoon['recharge_effect_m'].mean():.2f}m. Briefly explain what this value indicates about the station's monsoon recharge effectiveness and mention one factor that could cause this to vary year-on-year. Keep the response concise."""
+                     analysis = get_gemini_response(prompt)
+                     if analysis: st.markdown(analysis)
+                st.dataframe(monsoon)
             else: st.info("Insufficient seasonal data for monsoon analysis.")
-
-        with card("4. Historical Drought Event Analysis"):
+        
+        with card("3. Historical Drought Event Analysis"):
             drought_p = st.slider("Define Drought Threshold (% of deepest historical levels):", 70, 99, 85)
             droughts = detect_drought_events(df_base_filtered, drought_p)
             if droughts: st.warning(f"Detected {len(droughts)} significant drought periods."); st.dataframe(pd.DataFrame(droughts))
             else: st.success("No significant drought periods detected.")
 
 
-    # --- TAB 8: Full Report ---
-    elif selected_tab == tabs[7]:
+    # --- TAB 9: Full Report ---
+    elif selected_tab == tabs[8]:
         st.header("📋 Generate Consolidated Intelligence Report")
         st.write("Compile all key findings from the selected data into a single, downloadable report.")
         if st.button("➕ Generate Full Report for Current Selection"):
@@ -808,11 +939,12 @@ with main_container:
             st.metric("Short-Term Forecast", report_data["forecast_summary"] if isinstance(report_data["forecast_summary"], str) else report_data["forecast_summary"].get("final_predicted_level", "N/A"))
             st.markdown("---")
             st.download_button(label="📥 Download Full Report (JSON)", data=json.dumps(report_data, indent=2), file_name=f"water_report.json", mime="application/json")
-            if st.button("Generate AI Executive Summary of Report", disabled=not st.session_state.get("gemini_key")):
-                prompt = f"""Analyze the following JSON report on water resources and generate a concise executive summary for a high-level government official. Focus on the most critical findings and actionable insights. Report Data: {json.dumps(st.session_state['report_data'])}"""
+            if st.button("Generate Executive Summary of Report", disabled=not st.session_state.get("gemini_key")):
+                prompt = f"""Analyze the following JSON report on water resources and generate a concise executive summary for a high-level government official. 
+Focus on the most critical findings and actionable insights. Avoid jargon.
+The summary should be a moderate-length paragraph. Report Data: {json.dumps(st.session_state['report_data'])}"""
                 summary = get_gemini_response(prompt)
                 if summary:
-                    st.subheader("🤖 AI-Generated Executive Summary"); st.markdown(summary)
+                    st.subheader("Generated Executive Summary"); st.markdown(summary)
 
     st.markdown("</div>", unsafe_allow_html=True) # End fade-in wrapper
-
